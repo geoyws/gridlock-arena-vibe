@@ -1127,13 +1127,12 @@ void drawWorld()
     DrawLineV(start, end, LIGHTGRAY);
   }
 
-  // Draw terrain
-  /*
+  // Draw terrain (uncommented with faded colors for better contrast)
   for (int worldX = camLeft; worldX <= camRight; worldX++)
   {
     for (int worldY = camTop; worldY <= camBottom; worldY++)
     {
-      if (worldX >= 0 && worldY >= 0)
+      if (worldX >= 0 && worldY >= 0 && worldX < WORLD_SIZE && worldY < WORLD_SIZE)
       {
         WorldPosition pos = worldToChunk(worldX, worldY);
         int chunkIndex = getChunkIndex(pos.chunkX, pos.chunkY);
@@ -1146,36 +1145,35 @@ void drawWorld()
           switch (terrainType)
           {
           case 0:
-            terrainColor = (Color){100, 200, 100, 255};
-            break; // Grass - light green
+            terrainColor = (Color){60, 120, 60, 200}; // Grass - faded green
+            break;
           case 1:
-            terrainColor = (Color){200, 150, 100, 255};
-            break; // Mountain - light brown
+            terrainColor = (Color){120, 90, 60, 200}; // Mountain - faded brown
+            break;
           case 2:
-            terrainColor = (Color){50, 150, 50, 255};
-            break; // Tree - medium green
+            terrainColor = (Color){30, 90, 30, 200}; // Tree - faded dark green
+            break;
           case 3:
-            terrainColor = (Color){100, 200, 255, 255};
-            break; // Lake - light blue
+            terrainColor = (Color){60, 120, 180, 200}; // Lake - faded blue
+            break;
           case 4:
-            terrainColor = (Color){50, 100, 200, 255};
-            break; // Sea - medium blue
+            terrainColor = (Color){30, 60, 120, 200}; // Sea - faded dark blue
+            break;
           default:
-            terrainColor = (Color){100, 200, 100, 255};
-            break; // Default to grass
+            terrainColor = (Color){60, 120, 60, 200}; // Default to faded grass
+            break;
           }
 
           DrawRectangle(worldX * CELL_SIZE, worldY * CELL_SIZE, CELL_SIZE, CELL_SIZE, terrainColor);
         }
         else
         {
-          // Draw default grass terrain for unloaded chunks to prevent flashing
-          DrawRectangle(worldX * CELL_SIZE, worldY * CELL_SIZE, CELL_SIZE, CELL_SIZE, (Color){100, 200, 100, 255});
+          // Draw default faded grass terrain for unloaded chunks to prevent flashing
+          DrawRectangle(worldX * CELL_SIZE, worldY * CELL_SIZE, CELL_SIZE, CELL_SIZE, (Color){60, 120, 60, 200});
         }
       }
     }
   }
-  */
 
   // Draw landmines (only those in loaded chunks)
   for (int i = 0; i < landmineCount; i++)
@@ -1272,13 +1270,13 @@ void drawWorld()
 
 void drawMinimap()
 {
-  int minimapSize = 200;
+  int minimapSize = 120; // Smaller minimap
   int minimapX = WINDOW_SIZE - minimapSize - 10;
-  int minimapY = 10;
-  int minimapScale = 2; // Show 2x2 world cells per minimap pixel
+  int minimapY = WINDOW_SIZE - minimapSize - 10; // Bottom right corner
+  int minimapScale = 3;                          // Show 3x3 world cells per minimap pixel (zoomed out more)
 
   // Draw minimap background
-  DrawRectangle(minimapX, minimapY, minimapSize, minimapSize, (Color){0, 0, 0, 150});
+  DrawRectangle(minimapX, minimapY, minimapSize, minimapSize, (Color){0, 0, 0, 180});
   DrawRectangleLines(minimapX, minimapY, minimapSize, minimapSize, WHITE);
 
   // Calculate minimap bounds (centered on player)
@@ -1310,23 +1308,23 @@ void drawMinimap()
           switch (terrainType)
           {
           case 0:
-            terrainColor = (Color){100, 200, 100, 255};
-            break; // Grass - light green
+            terrainColor = (Color){60, 120, 60, 255};   // Grass - faded green
+            break;
           case 1:
-            terrainColor = (Color){200, 150, 100, 255};
-            break; // Mountain - light brown
+            terrainColor = (Color){120, 90, 60, 255};   // Mountain - faded brown
+            break;
           case 2:
-            terrainColor = (Color){50, 150, 50, 255};
-            break; // Tree - medium green
+            terrainColor = (Color){30, 90, 30, 255};    // Tree - faded dark green
+            break;
           case 3:
-            terrainColor = (Color){100, 200, 255, 255};
-            break; // Lake - light blue
+            terrainColor = (Color){60, 120, 180, 255};  // Lake - faded blue
+            break;
           case 4:
-            terrainColor = (Color){50, 100, 200, 255};
-            break; // Sea - medium blue
+            terrainColor = (Color){30, 60, 120, 255};   // Sea - faded dark blue
+            break;
           default:
-            terrainColor = (Color){100, 200, 100, 255};
-            break; // Default to grass
+            terrainColor = (Color){60, 120, 60, 255};   // Default to faded grass
+            break;
           }
 
           int minimapPixelX = minimapX + ((worldX - minimapLeft) / minimapScale);
@@ -1390,60 +1388,59 @@ void drawMinimap()
 
 void drawUI()
 {
-  // Draw UI background
-  DrawRectangle(0, 0, WINDOW_SIZE, 100, Fade(BLACK, 0.7f));
+  // Draw UI background (reduced height)
+  DrawRectangle(0, 0, WINDOW_SIZE, 60, Fade(BLACK, 0.7f));
 
-  // Player stats
-  DrawText(TextFormat("Health: %d/%d", player.health, player.maxHealth), 10, 10, 20, WHITE);
-  DrawText(TextFormat("Power: %d", (int)(player.power * player.damageMultiplier)), 10, 30, 20, WHITE);
-  DrawText(TextFormat("Level: %d", player.level), 10, 50, 20, WHITE);
-  DrawText(TextFormat("XP: %d/%d", player.experience, player.experienceToNext), 10, 70, 20, WHITE);
+  // Left side - Player stats
+  DrawText(TextFormat("HP: %d/%d", player.health, player.maxHealth), 10, 8, 18, WHITE);
+  DrawText(TextFormat("PWR: %d", (int)(player.power * player.damageMultiplier)), 10, 28, 18, WHITE);
+  DrawText(TextFormat("LVL: %d", player.level), 10, 48, 18, WHITE);
 
-  // Invulnerability indicator
+  // Middle left - XP and invulnerability
+  DrawText(TextFormat("XP: %d/%d", player.experience, player.experienceToNext), 120, 8, 18, WHITE);
   if (player.invulnerabilityTimer > 0)
   {
     int secondsLeft = player.invulnerabilityTimer / 60;
-    DrawText(TextFormat("INVULNERABLE (%ds)", secondsLeft + 1), 10, 90, 18, YELLOW);
+    DrawText(TextFormat("INVUL (%ds)", secondsLeft + 1), 120, 28, 16, YELLOW);
   }
 
-  // Debug info
-  DrawText(TextFormat("Monsters: %d/%d", monsterCount, MAX_MONSTERS), 200, 10, 20, YELLOW);
-  DrawText(TextFormat("Powerups: %d/%d", powerupCount, MAX_POWERUPS), 200, 30, 20, GREEN);
-  DrawText(TextFormat("Landmines: %d/%d", landmineCount, MAX_LANDMINES), 200, 50, 20, ORANGE);
-  DrawText(TextFormat("Chunks: %d/%d", loadedChunkCount, MAX_LOADED_CHUNKS), 200, 70, 20, (Color){0, 255, 255, 255});
+  // Middle right - Debug info
+  DrawText(TextFormat("Monsters: %d", monsterCount), 280, 8, 16, YELLOW);
+  DrawText(TextFormat("Powerups: %d", powerupCount), 280, 28, 16, GREEN);
+  DrawText(TextFormat("Landmines: %d", landmineCount), 280, 48, 16, ORANGE);
 
-  // Additional debug info
-  DrawText(TextFormat("Player: (%d,%d)", (int)player.x, (int)player.y), 400, 10, 20, WHITE);
-  DrawText(TextFormat("Alive: %d", player.alive), 400, 30, 20, player.alive ? GREEN : RED);
+  // Right side - Position and restart
+  DrawText(TextFormat("POS: (%d,%d)", (int)player.x, (int)player.y), 450, 8, 16, WHITE);
+  DrawText(player.alive ? "ALIVE" : "DEAD", 450, 28, 16, player.alive ? GREEN : RED);
 
-  // Restart button (always visible)
-  DrawRectangle(WINDOW_SIZE - 120, 10, 110, 30, Fade(BLUE, 0.8f));
-  DrawRectangleLines(WINDOW_SIZE - 120, 10, 110, 30, WHITE);
-  DrawText("RESTART (R)", WINDOW_SIZE - 115, 15, 18, WHITE);
+  // Restart button (smaller)
+  DrawRectangle(WINDOW_SIZE - 100, 8, 90, 25, Fade(BLUE, 0.8f));
+  DrawRectangleLines(WINDOW_SIZE - 100, 8, 90, 25, WHITE);
+  DrawText("RESTART (R)", WINDOW_SIZE - 95, 12, 14, WHITE);
 
-  // Powerup status
+  // Powerup status (if active)
   if (player.powerupTimer > 0)
   {
     const char *powerupName;
     switch (player.activePowerup)
     {
     case POWERUP_DOUBLE_DAMAGE:
-      powerupName = "DOUBLE DAMAGE";
+      powerupName = "2x DAMAGE";
       break;
     case POWERUP_DOUBLE_HEALTH:
-      powerupName = "FULL HEALTH";
+      powerupName = "FULL HP";
       break;
     case POWERUP_DOUBLE_SPEED:
-      powerupName = "DOUBLE SPEED";
+      powerupName = "2x SPEED";
       break;
     default:
-      powerupName = "UNKNOWN";
+      powerupName = "POWERUP";
       break;
     }
-    DrawText(TextFormat("%s (%d)", powerupName, player.powerupTimer / 60), 200, 10, 20, YELLOW);
+    DrawText(TextFormat("%s (%d)", powerupName, player.powerupTimer / 60), 120, 48, 14, YELLOW);
   }
 
-  // Draw minimap
+  // Draw minimap (moved to bottom right)
   drawMinimap();
 
   // Game over
