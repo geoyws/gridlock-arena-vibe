@@ -15,7 +15,7 @@
 // Chunk system constants
 #define CHUNK_SIZE 32
 #define CHUNK_CELL_SIZE (CHUNK_SIZE * CELL_SIZE)
-#define MAX_LOADED_CHUNKS 50  // 9x9 grid of chunks around player (increased)
+#define MAX_LOADED_CHUNKS 81  // 9x9 grid of chunks around player
 #define CHUNK_LOAD_DISTANCE 4 // Load chunks within 4 chunks of player (increased for more monsters)
 
 // Chunk system structures
@@ -173,8 +173,13 @@ void spawnMonster()
 
   Character *monster = &monsters[monsterCount++];
   strcpy(monster->name, "Monster");
-  monster->x = rand() % WORLD_SIZE;
-  monster->y = rand() % WORLD_SIZE;
+
+  // Spawn within 50-100 cells of player for unlimited world
+  int distance = 50 + rand() % 50;
+  float angle = (rand() % 360) * DEG2RAD;
+  monster->x = player.x + (int)(cos(angle) * distance);
+  monster->y = player.y + (int)(sin(angle) * distance);
+
   monster->health = 20 + rand() % 30; // 20-50 health
   monster->maxHealth = monster->health;
   monster->power = 3 + rand() % 5;          // 3-7 power
@@ -198,8 +203,13 @@ void spawnPowerup()
     return;
 
   Powerup *powerup = &powerups[powerupCount++];
-  powerup->x = rand() % WORLD_SIZE;
-  powerup->y = rand() % WORLD_SIZE;
+
+  // Spawn within 30-80 cells of player for unlimited world
+  int distance = 30 + rand() % 50;
+  float angle = (rand() % 360) * DEG2RAD;
+  powerup->x = player.x + (int)(cos(angle) * distance);
+  powerup->y = player.y + (int)(sin(angle) * distance);
+
   powerup->type = rand() % POWERUP_COUNT;
   powerup->active = 1;
 }
@@ -210,8 +220,13 @@ void spawnLandmine()
     return;
 
   Landmine *landmine = &landmines[landmineCount++];
-  landmine->x = rand() % WORLD_SIZE;
-  landmine->y = rand() % WORLD_SIZE;
+
+  // Spawn within 40-90 cells of player for unlimited world
+  int distance = 40 + rand() % 50;
+  float angle = (rand() % 360) * DEG2RAD;
+  landmine->x = player.x + (int)(cos(angle) * distance);
+  landmine->y = player.y + (int)(sin(angle) * distance);
+
   landmine->damage = 10 + rand() % 20; // 10-30 damage
   landmine->active = 1;
 }
@@ -222,10 +237,30 @@ WorldPosition worldToChunk(int worldX, int worldY)
   WorldPosition pos;
   pos.x = worldX;
   pos.y = worldY;
-  pos.chunkX = worldX / CHUNK_SIZE;
-  pos.chunkY = worldY / CHUNK_SIZE;
-  pos.localX = worldX % CHUNK_SIZE;
-  pos.localY = worldY % CHUNK_SIZE;
+
+  // Handle negative coordinates properly
+  if (worldX < 0)
+  {
+    pos.chunkX = (worldX - CHUNK_SIZE + 1) / CHUNK_SIZE;
+    pos.localX = (worldX % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
+  }
+  else
+  {
+    pos.chunkX = worldX / CHUNK_SIZE;
+    pos.localX = worldX % CHUNK_SIZE;
+  }
+
+  if (worldY < 0)
+  {
+    pos.chunkY = (worldY - CHUNK_SIZE + 1) / CHUNK_SIZE;
+    pos.localY = (worldY % CHUNK_SIZE + CHUNK_SIZE) % CHUNK_SIZE;
+  }
+  else
+  {
+    pos.chunkY = worldY / CHUNK_SIZE;
+    pos.localY = worldY % CHUNK_SIZE;
+  }
+
   return pos;
 }
 
@@ -269,7 +304,7 @@ int loadChunk(int chunkX, int chunkY)
     loadedChunks[oldestIndex].chunkX = chunkX;
     loadedChunks[oldestIndex].chunkY = chunkY;
     loadedChunks[oldestIndex].loaded = 1;
-    loadedChunks[oldestIndex].lastAccess = GetFrameTime() * 1000; // Current time in ms
+    loadedChunks[oldestIndex].lastAccess = (int)(GetTime() * 1000); // Current time in ms
     return 1;
   }
 
@@ -277,7 +312,7 @@ int loadChunk(int chunkX, int chunkY)
   loadedChunks[loadedChunkCount].chunkX = chunkX;
   loadedChunks[loadedChunkCount].chunkY = chunkY;
   loadedChunks[loadedChunkCount].loaded = 1;
-  loadedChunks[loadedChunkCount].lastAccess = GetFrameTime() * 1000;
+  loadedChunks[loadedChunkCount].lastAccess = (int)(GetTime() * 1000);
   loadedChunkCount++;
 
   // Generate content for this chunk
@@ -331,7 +366,12 @@ void generateChunkContent(int chunkX, int chunkY)
   // Generate terrain first
   generateChunkTerrain(chunkX, chunkY);
 
-  // Generate monsters for this chunk
+  // Get chunk index for terrain access
+  int chunkIndex = getChunkIndex(chunkX, chunkY);
+  if (chunkIndex == -1)
+    return;
+
+  // Generate monsters for this chunk with terrain-based spawning
   int monstersInChunk = 25 + rand() % 16; // 25-40 monsters per chunk for 20% screen coverage
   for (int i = 0; i < monstersInChunk; i++)
   {
@@ -339,21 +379,61 @@ void generateChunkContent(int chunkX, int chunkY)
       break;
 
     Character *monster = &monsters[monsterCount++];
+    int attempts = 0;
+    int localX, localY, worldX, worldY, terrainType;
+
+    // Try to find a suitable spawn location based on terrain
     do
     {
-      monster->x = chunkX * CHUNK_SIZE + rand() % CHUNK_SIZE;
-      monster->y = chunkY * CHUNK_SIZE + rand() % CHUNK_SIZE;
+      localX = rand() % CHUNK_SIZE;
+      localY = rand() % CHUNK_SIZE;
+      worldX = chunkX * CHUNK_SIZE + localX;
+      worldY = chunkY * CHUNK_SIZE + localY;
+      terrainType = loadedChunks[chunkIndex].terrain[localX][localY];
+      attempts++;
+    } while (((worldX == 0 && worldY == 0) || (worldX == player.x && worldY == player.y)) && attempts < 50); // Don't spawn on player start position
 
-      // Keep within world bounds
-      if (monster->x >= WORLD_SIZE)
-        monster->x = WORLD_SIZE - 1;
-      if (monster->y >= WORLD_SIZE)
-        monster->y = WORLD_SIZE - 1;
-    } while ((monster->x == 0 && monster->y == 0) || (monster->x == player.x && monster->y == player.y)); // Don't spawn on player start position
-    monster->health = 20 + rand() % 30; // 20-50 health
+    monster->x = worldX;
+    monster->y = worldY;
+
+    // No bounds checking - unlimited world!
+
+    // Set monster properties based on terrain type
+    switch (terrainType)
+    {
+    case 0:                                   // Grass - standard monsters
+      monster->health = 20 + rand() % 30;     // 20-50 health
+      monster->power = 3 + rand() % 5;        // 3-8 power
+      monster->textureIndex = 1 + rand() % 5; // Random monster texture
+      break;
+    case 1:                               // Mountains - stronger monsters
+      monster->health = 30 + rand() % 40; // 30-70 health
+      monster->power = 5 + rand() % 6;    // 5-11 power
+      monster->textureIndex = 1;          // Dragon for mountains
+      break;
+    case 2:                               // Trees - agile monsters
+      monster->health = 15 + rand() % 25; // 15-40 health
+      monster->power = 4 + rand() % 4;    // 4-8 power
+      monster->textureIndex = 2;          // Ghost for forests
+      break;
+    case 3:                               // Lakes - aquatic monsters
+      monster->health = 25 + rand() % 35; // 25-60 health
+      monster->power = 3 + rand() % 6;    // 3-9 power
+      monster->textureIndex = 3;          // Special lake monster
+      break;
+    case 4:                               // Sea - powerful monsters
+      monster->health = 35 + rand() % 45; // 35-80 health
+      monster->power = 6 + rand() % 7;    // 6-13 power
+      monster->textureIndex = 4;          // Powerful sea monster
+      break;
+    default:
+      monster->health = 20 + rand() % 30;
+      monster->power = 3 + rand() % 5;
+      monster->textureIndex = 1 + rand() % 5;
+      break;
+    }
+
     monster->maxHealth = monster->health;
-    monster->power = 3 + rand() % 5;        // 3-8 power
-    monster->textureIndex = 1 + rand() % 5; // Random monster texture
     monster->alive = 1;
     monster->speed = 1;
     monster->speedMultiplier = 1.0f;
@@ -367,47 +447,95 @@ void generateChunkContent(int chunkX, int chunkY)
     strcpy(monster->name, "Monster");
   }
 
-  // Generate powerups for this chunk
-  int powerupsInChunk = 3 + rand() % 3; // 3-5 powerups per chunk (increased)
+  // Generate powerups for this chunk with terrain preferences
+  int powerupsInChunk = 3 + rand() % 3; // 3-5 powerups per chunk
   for (int i = 0; i < powerupsInChunk; i++)
   {
     if (powerupCount >= MAX_POWERUPS)
       break;
 
     Powerup *powerup = &powerups[powerupCount++];
+    int attempts = 0;
+    int localX, localY, worldX, worldY, terrainType;
+
+    // Try to find a suitable spawn location
     do
     {
-      powerup->x = chunkX * CHUNK_SIZE + rand() % CHUNK_SIZE;
-      powerup->y = chunkY * CHUNK_SIZE + rand() % CHUNK_SIZE;
-      // Ensure powerup stays within world bounds
-      if (powerup->x >= WORLD_SIZE)
-        powerup->x = WORLD_SIZE - 1;
-      if (powerup->y >= WORLD_SIZE)
-        powerup->y = WORLD_SIZE - 1;
-    } while (powerup->x == 0 && powerup->y == 0); // Don't spawn on player start position
-    powerup->type = rand() % POWERUP_COUNT;
+      localX = rand() % CHUNK_SIZE;
+      localY = rand() % CHUNK_SIZE;
+      worldX = chunkX * CHUNK_SIZE + localX;
+      worldY = chunkY * CHUNK_SIZE + localY;
+      terrainType = loadedChunks[chunkIndex].terrain[localX][localY];
+      attempts++;
+    } while ((worldX == 0 && worldY == 0) && attempts < 50); // Don't spawn on player start position
+
+    powerup->x = worldX;
+    powerup->y = worldY;
+
+    // No bounds checking - unlimited world!
+
+    // Powerup type based on terrain (some terrains get better powerups)
+    if (terrainType == 1) // Mountains - better powerups
+    {
+      powerup->type = rand() % POWERUP_COUNT; // All types possible
+    }
+    else if (terrainType == 4) // Sea - health powerups more likely
+    {
+      powerup->type = (rand() % 2 == 0) ? POWERUP_DOUBLE_HEALTH : rand() % POWERUP_COUNT;
+    }
+    else
+    {
+      powerup->type = rand() % POWERUP_COUNT; // Random
+    }
+
     powerup->active = 1;
   }
 
-  // Generate landmines for this chunk
-  int landminesInChunk = 3 + rand() % 4; // 3-6 landmines per chunk (increased)
+  // Generate landmines for this chunk with terrain preferences
+  int landminesInChunk = 3 + rand() % 4; // 3-6 landmines per chunk
   for (int i = 0; i < landminesInChunk; i++)
   {
     if (landmineCount >= MAX_LANDMINES)
       break;
 
     Landmine *landmine = &landmines[landmineCount++];
+    int attempts = 0;
+    int localX, localY, worldX, worldY, terrainType;
+
+    // Try to find a suitable spawn location
     do
     {
-      landmine->x = chunkX * CHUNK_SIZE + rand() % CHUNK_SIZE;
-      landmine->y = chunkY * CHUNK_SIZE + rand() % CHUNK_SIZE;
-      // Ensure landmine stays within world bounds
-      if (landmine->x >= WORLD_SIZE)
-        landmine->x = WORLD_SIZE - 1;
-      if (landmine->y >= WORLD_SIZE)
-        landmine->y = WORLD_SIZE - 1;
-    } while (landmine->x == 0 && landmine->y == 0); // Don't spawn on player start position
-    landmine->damage = 10 + rand() % 20;
+      localX = rand() % CHUNK_SIZE;
+      localY = rand() % CHUNK_SIZE;
+      worldX = chunkX * CHUNK_SIZE + localX;
+      worldY = chunkY * CHUNK_SIZE + localY;
+      terrainType = loadedChunks[chunkIndex].terrain[localX][localY];
+      attempts++;
+    } while ((worldX == 0 && worldY == 0) && attempts < 50); // Don't spawn on player start position
+
+    landmine->x = worldX;
+    landmine->y = worldY;
+
+    // No bounds checking - unlimited world!
+
+    // Landmine damage based on terrain (dangerous areas have stronger mines)
+    if (terrainType == 1) // Mountains - very dangerous
+    {
+      landmine->damage = 15 + rand() % 25; // 15-40 damage
+    }
+    else if (terrainType == 4) // Sea - dangerous
+    {
+      landmine->damage = 12 + rand() % 20; // 12-32 damage
+    }
+    else if (terrainType == 2) // Trees - moderately dangerous
+    {
+      landmine->damage = 10 + rand() % 15; // 10-25 damage
+    }
+    else
+    {
+      landmine->damage = 8 + rand() % 12; // 8-20 damage
+    }
+
     landmine->active = 1;
   }
 }
@@ -419,45 +547,149 @@ void generateChunkTerrain(int chunkX, int chunkY)
   if (chunkIndex == -1)
     return;
 
-  // Simple procedural terrain generation using chunk coordinates as seed
+  // Use chunk coordinates as seed for consistent generation
   srand(chunkX * 1000 + chunkY);
 
+  // Generate base terrain with multiple noise layers
   for (int x = 0; x < CHUNK_SIZE; x++)
   {
     for (int y = 0; y < CHUNK_SIZE; y++)
     {
-      // Use multiple noise layers for terrain variety
+      // Multiple noise layers for more complex terrain
       int noise1 = (rand() % 100);
       int noise2 = (rand() % 100);
       int noise3 = (rand() % 100);
+      int noise4 = (rand() % 100);
 
-      // Distance from chunk center affects terrain
+      // Distance from chunk center affects terrain distribution
       int centerX = CHUNK_SIZE / 2;
       int centerY = CHUNK_SIZE / 2;
       float distanceFromCenter = sqrt((x - centerX) * (x - centerX) + (y - centerY) * (y - centerY));
       float maxDistance = sqrt(centerX * centerX + centerY * centerY);
       float centerFactor = distanceFromCenter / maxDistance;
 
-      // Generate terrain based on noise and position
-      if (noise1 < 5) // 5% mountains
+      // Global biome influence based on chunk coordinates
+      int biomeNoise = (abs(chunkX) + abs(chunkY)) % 100;
+
+      // Generate terrain with varied probabilities based on biome
+      if (biomeNoise < 20) // Forest biome
       {
-        loadedChunks[chunkIndex].terrain[x][y] = 1; // Mountain
+        if (noise1 < 3) // 3% mountains
+        {
+          loadedChunks[chunkIndex].terrain[x][y] = 1; // Mountain
+        }
+        else if (noise2 < 25 && centerFactor < 0.8) // 25% trees
+        {
+          loadedChunks[chunkIndex].terrain[x][y] = 2; // Tree
+        }
+        else if (noise3 < 5) // 5% lakes
+        {
+          loadedChunks[chunkIndex].terrain[x][y] = 3; // Lake
+        }
+        else
+        {
+          loadedChunks[chunkIndex].terrain[x][y] = 0; // Grass
+        }
       }
-      else if (noise2 < 15 && centerFactor < 0.7) // 15% trees, avoid edges
+      else if (biomeNoise < 40) // Mountain biome
       {
-        loadedChunks[chunkIndex].terrain[x][y] = 2; // Tree
+        if (noise1 < 15) // 15% mountains
+        {
+          loadedChunks[chunkIndex].terrain[x][y] = 1; // Mountain
+        }
+        else if (noise2 < 8) // 8% trees
+        {
+          loadedChunks[chunkIndex].terrain[x][y] = 2; // Tree
+        }
+        else if (noise3 < 3) // 3% lakes
+        {
+          loadedChunks[chunkIndex].terrain[x][y] = 3; // Lake
+        }
+        else
+        {
+          loadedChunks[chunkIndex].terrain[x][y] = 0; // Grass
+        }
       }
-      else if (noise3 < 8 && centerFactor > 0.3) // 8% water, prefer edges
+      else if (biomeNoise < 60) // Lake biome
       {
-        loadedChunks[chunkIndex].terrain[x][y] = 3; // Lake
+        if (noise1 < 2) // 2% mountains
+        {
+          loadedChunks[chunkIndex].terrain[x][y] = 1; // Mountain
+        }
+        else if (noise2 < 10) // 10% trees
+        {
+          loadedChunks[chunkIndex].terrain[x][y] = 2; // Tree
+        }
+        else if (noise3 < 20) // 20% lakes
+        {
+          loadedChunks[chunkIndex].terrain[x][y] = 3; // Lake
+        }
+        else if (noise4 < 5) // 5% sea
+        {
+          loadedChunks[chunkIndex].terrain[x][y] = 4; // Sea
+        }
+        else
+        {
+          loadedChunks[chunkIndex].terrain[x][y] = 0; // Grass
+        }
       }
-      else if (noise3 < 3) // 3% sea
+      else // Mixed biome
       {
-        loadedChunks[chunkIndex].terrain[x][y] = 4; // Sea
+        if (noise1 < 8) // 8% mountains
+        {
+          loadedChunks[chunkIndex].terrain[x][y] = 1; // Mountain
+        }
+        else if (noise2 < 15 && centerFactor < 0.7) // 15% trees
+        {
+          loadedChunks[chunkIndex].terrain[x][y] = 2; // Tree
+        }
+        else if (noise3 < 10 && centerFactor > 0.3) // 10% water
+        {
+          loadedChunks[chunkIndex].terrain[x][y] = 3; // Lake
+        }
+        else if (noise4 < 3) // 3% sea
+        {
+          loadedChunks[chunkIndex].terrain[x][y] = 4; // Sea
+        }
+        else
+        {
+          loadedChunks[chunkIndex].terrain[x][y] = 0; // Grass
+        }
       }
-      else
+    }
+  }
+
+  // Add some clustered features for more interesting terrain
+  int clusterCount = rand() % 3; // 0-2 clusters per chunk
+  for (int cluster = 0; cluster < clusterCount; cluster++)
+  {
+    int clusterX = rand() % CHUNK_SIZE;
+    int clusterY = rand() % CHUNK_SIZE;
+    int clusterSize = 2 + rand() % 4; // 2-5 tiles
+    int clusterType = rand() % 4;     // 0=trees, 1=lakes, 2=mountains, 3=sea
+
+    for (int dx = -clusterSize; dx <= clusterSize; dx++)
+    {
+      for (int dy = -clusterSize; dy <= clusterSize; dy++)
       {
-        loadedChunks[chunkIndex].terrain[x][y] = 0; // Grass
+        int nx = clusterX + dx;
+        int ny = clusterY + dy;
+
+        if (nx >= 0 && nx < CHUNK_SIZE && ny >= 0 && ny < CHUNK_SIZE)
+        {
+          float distance = sqrt(dx * dx + dy * dy);
+          if (distance <= clusterSize && rand() % 100 < 70) // 70% chance within cluster
+          {
+            if (clusterType == 0 && loadedChunks[chunkIndex].terrain[nx][ny] == 0)
+              loadedChunks[chunkIndex].terrain[nx][ny] = 2; // Trees
+            else if (clusterType == 1 && loadedChunks[chunkIndex].terrain[nx][ny] == 0)
+              loadedChunks[chunkIndex].terrain[nx][ny] = 3; // Lakes
+            else if (clusterType == 2 && loadedChunks[chunkIndex].terrain[nx][ny] == 0)
+              loadedChunks[chunkIndex].terrain[nx][ny] = 1; // Mountains
+            else if (clusterType == 3 && loadedChunks[chunkIndex].terrain[nx][ny] == 0)
+              loadedChunks[chunkIndex].terrain[nx][ny] = 4; // Sea
+          }
+        }
       }
     }
   }
@@ -468,7 +700,7 @@ void updateChunks()
   // Get player's chunk position
   WorldPosition playerPos = worldToChunk(player.x, player.y);
 
-  // Load chunks around player
+  // Load chunks around player - UNLIMITED exploration!
   for (int dx = -CHUNK_LOAD_DISTANCE; dx <= CHUNK_LOAD_DISTANCE; dx++)
   {
     for (int dy = -CHUNK_LOAD_DISTANCE; dy <= CHUNK_LOAD_DISTANCE; dy++)
@@ -476,22 +708,25 @@ void updateChunks()
       int chunkX = playerPos.chunkX + dx;
       int chunkY = playerPos.chunkY + dy;
 
-      // Only load chunks that are within world bounds
-      // World is WORLD_SIZE units, chunks are CHUNK_SIZE units
-      int maxChunkX = (WORLD_SIZE + CHUNK_SIZE - 1) / CHUNK_SIZE; // Ceiling division
-      int maxChunkY = (WORLD_SIZE + CHUNK_SIZE - 1) / CHUNK_SIZE;
-
-      if (chunkX >= 0 && chunkX < maxChunkX && chunkY >= 0 && chunkY < maxChunkY)
-      {
-        loadChunk(chunkX, chunkY);
-      }
+      // No bounds checking - unlimited world!
+      loadChunk(chunkX, chunkY);
     }
   }
 
-  // Update access times for loaded chunks
-  for (int i = 0; i < loadedChunkCount; i++)
+  // Update access times for chunks around player (not all chunks)
+  int currentTime = (int)(GetTime() * 1000);
+  for (int dx = -CHUNK_LOAD_DISTANCE; dx <= CHUNK_LOAD_DISTANCE; dx++)
   {
-    loadedChunks[i].lastAccess = GetFrameTime() * 1000;
+    for (int dy = -CHUNK_LOAD_DISTANCE; dy <= CHUNK_LOAD_DISTANCE; dy++)
+    {
+      int chunkX = playerPos.chunkX + dx;
+      int chunkY = playerPos.chunkY + dy;
+      int chunkIndex = getChunkIndex(chunkX, chunkY);
+      if (chunkIndex != -1)
+      {
+        loadedChunks[chunkIndex].lastAccess = currentTime;
+      }
+    }
   }
 }
 
@@ -564,16 +799,7 @@ void ensureNearbyMonsters()
         spawnY = player.y + sin(angle) * spawnDistance;
       }
 
-      // Keep within world bounds with better distribution
-      if (spawnX < 2)
-        spawnX = 2;
-      if (spawnX >= WORLD_SIZE - 2)
-        spawnX = WORLD_SIZE - 3;
-      if (spawnY < 2)
-        spawnY = 2;
-      if (spawnY >= WORLD_SIZE - 2)
-        spawnY = WORLD_SIZE - 3;
-
+      // No bounds checking - unlimited world!
       // Convert to integer coordinates
       monster->x = (int)round(spawnX);
       monster->y = (int)round(spawnY);
@@ -675,15 +901,7 @@ void ensureNearbyPowerups()
         powerup->x = player.x + cos(angle) * distance;
         powerup->y = player.y + sin(angle) * distance;
 
-        // Keep within world bounds
-        if (powerup->x < 0)
-          powerup->x = 0;
-        if (powerup->x >= WORLD_SIZE)
-          powerup->x = WORLD_SIZE - 1;
-        if (powerup->y < 0)
-          powerup->y = 0;
-        if (powerup->y >= WORLD_SIZE)
-          powerup->y = WORLD_SIZE - 1;
+        // No bounds checking - unlimited world!
 
         attempts++;
         if (attempts >= MAX_ATTEMPTS)
@@ -745,15 +963,7 @@ void ensureNearbyLandmines()
         landmine->x = player.x + cos(angle) * distance;
         landmine->y = player.y + sin(angle) * distance;
 
-        // Keep within world bounds
-        if (landmine->x < 0)
-          landmine->x = 0;
-        if (landmine->x >= WORLD_SIZE)
-          landmine->x = WORLD_SIZE - 1;
-        if (landmine->y < 0)
-          landmine->y = 0;
-        if (landmine->y >= WORLD_SIZE)
-          landmine->y = WORLD_SIZE - 1;
+        // No bounds checking - unlimited world!
 
         attempts++;
         if (attempts >= MAX_ATTEMPTS)
@@ -818,15 +1028,7 @@ void updatePlayer()
     // if (sounds[0].frameCount > 0) PlaySound(sounds[0]);
   }
 
-  // Keep player within world bounds
-  if (player.x < 0)
-    player.x = 0;
-  if (player.x >= WORLD_SIZE)
-    player.x = WORLD_SIZE - 1;
-  if (player.y < 0)
-    player.y = 0;
-  if (player.y >= WORLD_SIZE)
-    player.y = WORLD_SIZE - 1;
+  // No bounds checking - unlimited world exploration!
 
   // Update camera to follow player
   camera.target = (Vector2){player.x * CELL_SIZE, player.y * CELL_SIZE};
@@ -867,14 +1069,11 @@ void updateMonsters()
       break;
     }
 
-    // Keep in bounds
-    if (newX >= 0 && newX < WORLD_SIZE && newY >= 0 && newY < WORLD_SIZE)
-    {
-      monsters[i].x = newX;
-      monsters[i].y = newY;
-      // Set cooldown after moving (longer when in combat)
-      monsters[i].movementCooldown = monsters[i].isInCombat ? 24 : 12; // 50% slower when fighting
-    }
+    // No bounds checking - unlimited world!
+    monsters[i].x = newX;
+    monsters[i].y = newY;
+    // Set cooldown after moving (longer when in combat)
+    monsters[i].movementCooldown = monsters[i].isInCombat ? 24 : 12; // 50% slower when fighting
   }
 
   // Despawn monsters that are too far from player
@@ -1103,17 +1302,55 @@ void drawWorld()
   int camTop = (camera.target.y - WINDOW_SIZE / 2) / CELL_SIZE - 1;
   int camBottom = (camera.target.y + WINDOW_SIZE / 2) / CELL_SIZE + 1;
 
-  // Keep camera bounds within world limits
-  if (camLeft < 0)
-    camLeft = 0;
-  if (camRight >= WORLD_SIZE)
-    camRight = WORLD_SIZE - 1;
-  if (camTop < 0)
-    camTop = 0;
-  if (camBottom >= WORLD_SIZE)
-    camBottom = WORLD_SIZE - 1;
+  // No bounds checking - unlimited world exploration!
 
-  // Draw grid within camera bounds
+  // Draw terrain (uncommented with faded colors for better contrast)
+  for (int worldX = camLeft; worldX <= camRight; worldX++)
+  {
+    for (int worldY = camTop; worldY <= camBottom; worldY++)
+    {
+      // No bounds checking - unlimited world!
+      WorldPosition pos = worldToChunk(worldX, worldY);
+      int chunkIndex = getChunkIndex(pos.chunkX, pos.chunkY);
+
+      if (chunkIndex != -1)
+      {
+        int terrainType = loadedChunks[chunkIndex].terrain[pos.localX][pos.localY];
+        Color terrainColor;
+
+        switch (terrainType)
+        {
+        case 0:
+          terrainColor = (Color){80, 140, 80, 220}; // Grass - slightly brighter green
+          break;
+        case 1:
+          terrainColor = (Color){140, 110, 80, 220}; // Mountain - slightly brighter brown
+          break;
+        case 2:
+          terrainColor = (Color){50, 110, 50, 220}; // Tree - slightly brighter dark green
+          break;
+        case 3:
+          terrainColor = (Color){80, 140, 200, 220}; // Lake - slightly brighter blue
+          break;
+        case 4:
+          terrainColor = (Color){50, 80, 140, 220}; // Sea - slightly brighter dark blue
+          break;
+        default:
+          terrainColor = (Color){80, 140, 80, 220}; // Default to brighter grass
+          break;
+        }
+
+        DrawRectangle(worldX * CELL_SIZE, worldY * CELL_SIZE, CELL_SIZE, CELL_SIZE, terrainColor);
+      }
+      else
+      {
+        // Draw default brighter grass terrain for unloaded chunks to prevent flashing
+        DrawRectangle(worldX * CELL_SIZE, worldY * CELL_SIZE, CELL_SIZE, CELL_SIZE, (Color){80, 140, 80, 220});
+      }
+    }
+  }
+
+  // Draw grid within camera bounds (after terrain so it appears on top)
   for (int x = camLeft; x <= camRight; x++)
   {
     Vector2 start = {x * CELL_SIZE, camTop * CELL_SIZE};
@@ -1125,54 +1362,6 @@ void drawWorld()
     Vector2 start = {camLeft * CELL_SIZE, y * CELL_SIZE};
     Vector2 end = {camRight * CELL_SIZE, y * CELL_SIZE};
     DrawLineV(start, end, LIGHTGRAY);
-  }
-
-  // Draw terrain (uncommented with faded colors for better contrast)
-  for (int worldX = camLeft; worldX <= camRight; worldX++)
-  {
-    for (int worldY = camTop; worldY <= camBottom; worldY++)
-    {
-      if (worldX >= 0 && worldY >= 0 && worldX < WORLD_SIZE && worldY < WORLD_SIZE)
-      {
-        WorldPosition pos = worldToChunk(worldX, worldY);
-        int chunkIndex = getChunkIndex(pos.chunkX, pos.chunkY);
-
-        if (chunkIndex != -1)
-        {
-          int terrainType = loadedChunks[chunkIndex].terrain[pos.localX][pos.localY];
-          Color terrainColor;
-
-          switch (terrainType)
-          {
-          case 0:
-            terrainColor = (Color){60, 120, 60, 200}; // Grass - faded green
-            break;
-          case 1:
-            terrainColor = (Color){120, 90, 60, 200}; // Mountain - faded brown
-            break;
-          case 2:
-            terrainColor = (Color){30, 90, 30, 200}; // Tree - faded dark green
-            break;
-          case 3:
-            terrainColor = (Color){60, 120, 180, 200}; // Lake - faded blue
-            break;
-          case 4:
-            terrainColor = (Color){30, 60, 120, 200}; // Sea - faded dark blue
-            break;
-          default:
-            terrainColor = (Color){60, 120, 60, 200}; // Default to faded grass
-            break;
-          }
-
-          DrawRectangle(worldX * CELL_SIZE, worldY * CELL_SIZE, CELL_SIZE, CELL_SIZE, terrainColor);
-        }
-        else
-        {
-          // Draw default faded grass terrain for unloaded chunks to prevent flashing
-          DrawRectangle(worldX * CELL_SIZE, worldY * CELL_SIZE, CELL_SIZE, CELL_SIZE, (Color){60, 120, 60, 200});
-        }
-      }
-    }
   }
 
   // Draw landmines (only those in loaded chunks)
@@ -1290,56 +1479,52 @@ void drawMinimap()
   int minimapBottom = minimapCenterY + minimapHalfSize;
 
   // Draw terrain on minimap
-  /*
   for (int worldX = minimapLeft; worldX <= minimapRight; worldX += minimapScale)
   {
     for (int worldY = minimapTop; worldY <= minimapBottom; worldY += minimapScale)
     {
-      if (worldX >= 0 && worldY >= 0)
+      // No bounds checking - unlimited world!
+      WorldPosition pos = worldToChunk(worldX, worldY);
+      int chunkIndex = getChunkIndex(pos.chunkX, pos.chunkY);
+
+      if (chunkIndex != -1)
       {
-        WorldPosition pos = worldToChunk(worldX, worldY);
-        int chunkIndex = getChunkIndex(pos.chunkX, pos.chunkY);
+        int terrainType = loadedChunks[chunkIndex].terrain[pos.localX][pos.localY];
+        Color terrainColor;
 
-        if (chunkIndex != -1)
+        switch (terrainType)
         {
-          int terrainType = loadedChunks[chunkIndex].terrain[pos.localX][pos.localY];
-          Color terrainColor;
+        case 0:
+          terrainColor = (Color){80, 140, 80, 255}; // Grass - brighter green
+          break;
+        case 1:
+          terrainColor = (Color){140, 110, 80, 255}; // Mountain - brighter brown
+          break;
+        case 2:
+          terrainColor = (Color){50, 110, 50, 255}; // Tree - brighter dark green
+          break;
+        case 3:
+          terrainColor = (Color){80, 140, 200, 255}; // Lake - brighter blue
+          break;
+        case 4:
+          terrainColor = (Color){50, 80, 140, 255}; // Sea - brighter dark blue
+          break;
+        default:
+          terrainColor = (Color){80, 140, 80, 255}; // Default to brighter grass
+          break;
+        }
 
-          switch (terrainType)
-          {
-          case 0:
-            terrainColor = (Color){60, 120, 60, 255};   // Grass - faded green
-            break;
-          case 1:
-            terrainColor = (Color){120, 90, 60, 255};   // Mountain - faded brown
-            break;
-          case 2:
-            terrainColor = (Color){30, 90, 30, 255};    // Tree - faded dark green
-            break;
-          case 3:
-            terrainColor = (Color){60, 120, 180, 255};  // Lake - faded blue
-            break;
-          case 4:
-            terrainColor = (Color){30, 60, 120, 255};   // Sea - faded dark blue
-            break;
-          default:
-            terrainColor = (Color){60, 120, 60, 255};   // Default to faded grass
-            break;
-          }
+        int minimapPixelX = minimapX + ((worldX - minimapLeft) / minimapScale);
+        int minimapPixelY = minimapY + ((worldY - minimapTop) / minimapScale);
 
-          int minimapPixelX = minimapX + ((worldX - minimapLeft) / minimapScale);
-          int minimapPixelY = minimapY + ((worldY - minimapTop) / minimapScale);
-
-          if (minimapPixelX >= minimapX && minimapPixelX < minimapX + minimapSize &&
-              minimapPixelY >= minimapY && minimapPixelY < minimapY + minimapSize)
-          {
-            DrawRectangle(minimapPixelX, minimapPixelY, 1, 1, terrainColor);
-          }
+        if (minimapPixelX >= minimapX && minimapPixelX < minimapX + minimapSize &&
+            minimapPixelY >= minimapY && minimapPixelY < minimapY + minimapSize)
+        {
+          DrawRectangle(minimapPixelX, minimapPixelY, 1, 1, terrainColor);
         }
       }
     }
   }
-  */
 
   // Draw player on minimap
   int playerMinimapX = minimapX + (minimapSize / 2);
