@@ -15,8 +15,8 @@
 // Chunk system constants
 #define CHUNK_SIZE 32
 #define CHUNK_CELL_SIZE (CHUNK_SIZE * CELL_SIZE)
-#define MAX_LOADED_CHUNKS 81  // 9x9 grid of chunks around player
-#define CHUNK_LOAD_DISTANCE 4 // Load chunks within 4 chunks of player (increased for more monsters)
+#define MAX_LOADED_CHUNKS 625  // 25x25 grid of chunks around player
+#define CHUNK_LOAD_DISTANCE 12 // Much larger loading distance to prevent chunk unloading
 
 // Chunk system structures
 typedef struct
@@ -305,6 +305,10 @@ int loadChunk(int chunkX, int chunkY)
     loadedChunks[oldestIndex].chunkY = chunkY;
     loadedChunks[oldestIndex].loaded = 1;
     loadedChunks[oldestIndex].lastAccess = (int)(GetTime() * 1000); // Current time in ms
+
+    // Generate content for the new chunk
+    generateChunkContent(chunkX, chunkY);
+
     return 1;
   }
 
@@ -326,37 +330,61 @@ void unloadChunkEntities(int chunkIndex)
   int chunkX = loadedChunks[chunkIndex].chunkX;
   int chunkY = loadedChunks[chunkIndex].chunkY;
 
-  // Remove monsters in this chunk
+  // Remove monsters in this chunk (but keep ones near player)
   for (int i = 0; i < monsterCount; i++)
   {
     WorldPosition pos = worldToChunk(monsters[i].x, monsters[i].y);
     if (pos.chunkX == chunkX && pos.chunkY == chunkY)
     {
-      // Remove this monster by swapping with the last one
-      monsters[i] = monsters[--monsterCount];
-      i--; // Recheck this index
+      // Check if monster is close to player - don't remove if nearby
+      float dx = monsters[i].x - player.x;
+      float dy = monsters[i].y - player.y;
+      float distance = sqrt(dx * dx + dy * dy);
+
+      if (distance > 200) // Only remove monsters more than 200 units from player
+      {
+        // Remove this monster by swapping with the last one
+        monsters[i] = monsters[--monsterCount];
+        i--; // Recheck this index
+      }
     }
   }
 
-  // Remove powerups in this chunk
+  // Remove powerups in this chunk (but keep ones near player)
   for (int i = 0; i < powerupCount; i++)
   {
     WorldPosition pos = worldToChunk(powerups[i].x, powerups[i].y);
     if (pos.chunkX == chunkX && pos.chunkY == chunkY)
     {
-      powerups[i] = powerups[--powerupCount];
-      i--;
+      // Check if powerup is close to player - don't remove if nearby
+      float dx = powerups[i].x - player.x;
+      float dy = powerups[i].y - player.y;
+      float distance = sqrt(dx * dx + dy * dy);
+
+      if (distance > 200) // Only remove powerups more than 200 units from player
+      {
+        powerups[i] = powerups[--powerupCount];
+        i--;
+      }
     }
   }
 
-  // Remove landmines in this chunk
+  // Remove landmines in this chunk (but keep ones near player)
   for (int i = 0; i < landmineCount; i++)
   {
     WorldPosition pos = worldToChunk(landmines[i].x, landmines[i].y);
     if (pos.chunkX == chunkX && pos.chunkY == chunkY)
     {
-      landmines[i] = landmines[--landmineCount];
-      i--;
+      // Check if landmine is close to player - don't remove if nearby
+      float dx = landmines[i].x - player.x;
+      float dy = landmines[i].y - player.y;
+      float distance = sqrt(dx * dx + dy * dy);
+
+      if (distance > 200) // Only remove landmines more than 200 units from player
+      {
+        landmines[i] = landmines[--landmineCount];
+        i--;
+      }
     }
   }
 }
@@ -732,9 +760,10 @@ void updateChunks()
 
 void ensureNearbyMonsters()
 {
-  const int MIN_NEARBY_DISTANCE = 8;  // Minimum distance for "nearby" (increased for safety)
-  const int MAX_NEARBY_DISTANCE = 25; // Maximum distance for "nearby" (increased for variety)
-  const int MIN_NEARBY_MONSTERS = 6;  // Minimum monsters within nearby range (balanced)
+  const int MIN_NEARBY_DISTANCE = 3;   // Reduced for more responsive spawning
+  const int MAX_NEARBY_DISTANCE = 300; // Match despawn distance for consistency
+  const int MIN_NEARBY_MONSTERS = 20;  // Much higher minimum for stable population
+  const int MAX_SPAWN_PER_FRAME = 12;  // Allow more monsters to spawn quickly
 
   int nearbyMonsterCount = 0;
 
@@ -758,8 +787,12 @@ void ensureNearbyMonsters()
   if (nearbyMonsterCount < MIN_NEARBY_MONSTERS && monsterCount < MAX_MONSTERS)
   {
     int monstersToSpawn = MIN_NEARBY_MONSTERS - nearbyMonsterCount;
-    if (monstersToSpawn > 3)
-      monstersToSpawn = 3; // Don't spawn too many at once
+    if (monstersToSpawn > MAX_SPAWN_PER_FRAME)
+      monstersToSpawn = MAX_SPAWN_PER_FRAME; // Limit spawning per frame
+
+    // Always spawn at least 2 monsters if we have room and count is low
+    if (monstersToSpawn == 0 && nearbyMonsterCount < MIN_NEARBY_MONSTERS - 3)
+      monstersToSpawn = 2;
 
     // Sometimes spawn in small clusters (15% chance for more natural distribution)
     int spawnInCluster = (rand() % 100) < 15;
@@ -857,7 +890,7 @@ void ensureNearbyMonsters()
 void ensureNearbyPowerups()
 {
   const int MIN_NEARBY_DISTANCE = 5;  // Minimum distance for "nearby"
-  const int MAX_NEARBY_DISTANCE = 25; // Maximum distance for "nearby"
+  const int MAX_NEARBY_DISTANCE = 50; // Maximum distance for "nearby"
   const int MIN_NEARBY_POWERUPS = 3;  // Minimum powerups within nearby range
 
   int nearbyPowerupCount = 0;
@@ -919,7 +952,7 @@ void ensureNearbyPowerups()
 void ensureNearbyLandmines()
 {
   const int MIN_NEARBY_DISTANCE = 8;  // Minimum distance for "nearby"
-  const int MAX_NEARBY_DISTANCE = 30; // Maximum distance for "nearby"
+  const int MAX_NEARBY_DISTANCE = 60; // Maximum distance for "nearby" (landmines can be further)
   const int MIN_NEARBY_LANDMINES = 2; // Minimum landmines within nearby range
 
   int nearbyLandmineCount = 0;
@@ -1077,7 +1110,7 @@ void updateMonsters()
   }
 
   // Despawn monsters that are too far from player
-  const int DESPAWN_DISTANCE = 50;   // Despawn monsters more than 50 units away
+  const int DESPAWN_DISTANCE = 300;  // Very large despawn distance for maximum stability
   const int MIN_NEARBY_MONSTERS = 6; // Keep at least 6 monsters nearby (consistent with spawn logic)
 
   int nearbyMonsterCount = 0;
@@ -1257,7 +1290,7 @@ void updatePowerups()
   }
 
   // Despawn powerups that are too far from player
-  const int DESPAWN_DISTANCE = 50; // Despawn powerups more than 50 units away
+  const int DESPAWN_DISTANCE = 300; // Despawn powerups more than 300 units away
 
   for (int i = powerupCount - 1; i >= 0; i--)
   {
@@ -1277,7 +1310,7 @@ void updatePowerups()
 void updateLandmines()
 {
   // Despawn landmines that are too far from player
-  const int DESPAWN_DISTANCE = 50; // Despawn landmines more than 50 units away
+  const int DESPAWN_DISTANCE = 300; // Despawn landmines more than 300 units away
 
   for (int i = landmineCount - 1; i >= 0; i--)
   {
@@ -1367,7 +1400,7 @@ void drawWorld()
   // Draw landmines (only those in loaded chunks)
   for (int i = 0; i < landmineCount; i++)
   {
-    if (landmines[i].active && landmines[i].x >= 0 && landmines[i].y >= 0)
+    if (landmines[i].active)
     {
       DrawCircle(landmines[i].x * CELL_SIZE + CELL_SIZE / 2,
                  landmines[i].y * CELL_SIZE + CELL_SIZE / 2,
@@ -1378,7 +1411,7 @@ void drawWorld()
   // Draw powerups (only those in loaded chunks)
   for (int i = 0; i < powerupCount; i++)
   {
-    if (powerups[i].active && powerups[i].x >= 0 && powerups[i].y >= 0)
+    if (powerups[i].active)
     {
       Color color;
       switch (powerups[i].type)
@@ -1405,7 +1438,7 @@ void drawWorld()
   // Draw monsters (only those in loaded chunks)
   for (int i = 0; i < monsterCount; i++)
   {
-    if (monsters[i].alive && monsters[i].x >= 0 && monsters[i].y >= 0)
+    if (monsters[i].alive)
     {
       // Check if monster is in camera view
       float screenX = monsters[i].x * CELL_SIZE - camera.target.x + camera.offset.x;
@@ -1687,28 +1720,26 @@ int main()
 
       // Ensure landmines are nearby
       ensureNearbyLandmines();
-    }
-    else
-    {
-      // Restart on R key
+
+      // Restart on R key (works anytime)
       if (IsKeyPressed(KEY_R))
       {
         initGame();
         spawnTimer = 0;
       }
+
+      // Draw
+      BeginDrawing();
+      ClearBackground(WHITE);
+
+      BeginMode2D(camera);
+      drawWorld();
+      EndMode2D();
+
+      drawUI();
+
+      EndDrawing();
     }
-
-    // Draw
-    BeginDrawing();
-    ClearBackground(WHITE);
-
-    BeginMode2D(camera);
-    drawWorld();
-    EndMode2D();
-
-    drawUI();
-
-    EndDrawing();
   }
 
   // Cleanup
