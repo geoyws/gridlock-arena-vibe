@@ -11,6 +11,7 @@
 #define MAX_MONSTERS 2000
 #define MAX_POWERUPS 50
 #define MAX_LANDMINES 100
+#define MAX_PROJECTILES 100
 
 // Chunk system constants
 #define CHUNK_SIZE 32
@@ -58,6 +59,9 @@ void ensureNearbyMonsters();
 void ensureNearbyPowerups();
 void ensureNearbyLandmines();
 void generateChunkTerrain(int chunkX, int chunkY);
+void spawnProjectile(int x, int y, float dx, float dy, int type, int damage);
+void updateProjectiles();
+void drawProjectiles();
 
 typedef enum
 {
@@ -95,6 +99,27 @@ typedef struct
   int experienceToNext;
   int isInCombat;
   int invulnerabilityTimer; // 3 seconds of invulnerability after spawning
+
+  // Player special abilities
+  int jumpSmashCooldown;
+  int rushCooldown;
+  int healCooldown;
+  int arrowCooldown;
+
+  // Last movement direction for abilities
+  int lastDirX;
+  int lastDirY;
+
+  // Intended movement direction (what keys are being pressed)
+  int intendedDirX;
+  int intendedDirY;
+
+  // Status effects
+  int stunTimer;       // Lightning stun
+  int dotTimer;        // Fire damage over time
+  int dotDamage;       // Damage per tick
+  int speedBoostTimer; // Rush speed boost duration
+  int deathTimer;      // Auto-restart timer after death
 } Character;
 
 typedef struct
@@ -111,19 +136,59 @@ typedef struct
   int active;
 } Landmine;
 
+typedef struct
+{
+  int x, y;
+  float dx, dy; // Changed to float for precise direction tracking
+  int type;     // 0=lightning, 1=fireball, 2=arrow
+  int alive;
+  int damage;
+  int speed;
+  int effect;   // 0=none, 1=stun, 2=dot
+  int range;    // Distance traveled
+  int maxRange; // Maximum range before disappearing
+} Projectile;
+
 Character player;
 Character monsters[MAX_MONSTERS];
 Powerup powerups[MAX_POWERUPS];
 Landmine landmines[MAX_LANDMINES];
+Projectile projectiles[MAX_PROJECTILES];
 Chunk loadedChunks[MAX_LOADED_CHUNKS];
 int loadedChunkCount = 0;
 int monsterCount = 0;
 int powerupCount = 0;
 int landmineCount = 0;
+int projectileCount = 0;
 
 Texture2D textures[10]; // Player + monsters + powerups + landmines
 Sound sounds[10];       // Various sound effects
 Camera2D camera = {0};
+
+void restartGame()
+{
+  // Reset all game state first
+  projectileCount = 0;
+  monsterCount = 0;
+  powerupCount = 0;
+  landmineCount = 0;
+  loadedChunkCount = 0;
+
+  // Clear all arrays to prevent stale data issues
+  memset(monsters, 0, sizeof(monsters));
+  memset(powerups, 0, sizeof(powerups));
+  memset(landmines, 0, sizeof(landmines));
+  memset(projectiles, 0, sizeof(projectiles));
+
+  // Clear all chunks
+  for (int i = 0; i < MAX_LOADED_CHUNKS; i++)
+  {
+    loadedChunks[i].loaded = 0;
+  }
+
+  // Reinitialize game
+  initGame();
+}
 
 void initGame()
 {
@@ -147,6 +212,20 @@ void initGame()
   player.isInCombat = 0;
   player.invulnerabilityTimer = 180; // 3 seconds at 60 FPS
 
+  // Initialize player abilities and status
+  player.jumpSmashCooldown = 0;
+  player.rushCooldown = 0;
+  player.healCooldown = 0;
+  player.arrowCooldown = 0;
+  player.lastDirX = 0;
+  player.lastDirY = -1; // Default to up
+  player.intendedDirX = 0;
+  player.intendedDirY = -1;
+  player.stunTimer = 0;
+  player.dotTimer = 0;
+  player.dotDamage = 0;
+  player.speedBoostTimer = 0;
+
   // Initialize camera
   camera.target = (Vector2){player.x * CELL_SIZE, player.y * CELL_SIZE};
   camera.offset = (Vector2){WINDOW_SIZE / 2, WINDOW_SIZE / 2};
@@ -163,6 +242,38 @@ void initGame()
   for (int i = 0; i < 3; i++) // Load chunks multiple times to ensure they're ready
   {
     updateChunks();
+  }
+
+  // Initial monster spawn for immediate gameplay
+  for (int i = 0; i < 15; i++) // Spawn 15 monsters initially
+  {
+    if (monsterCount < MAX_MONSTERS)
+    {
+      Character *monster = &monsters[monsterCount++];
+      strcpy(monster->name, "Monster");
+
+      // Spawn closer initially: 5-50 units from player
+      int distance = 5 + rand() % 45;
+      float angle = (rand() % 360) * DEG2RAD;
+      monster->x = player.x + (int)(cos(angle) * distance);
+      monster->y = player.y + (int)(sin(angle) * distance);
+
+      monster->health = 20 + rand() % 30;
+      monster->maxHealth = monster->health;
+      monster->power = 3 + rand() % 5;
+      monster->textureIndex = 1 + (rand() % 5); // Random monster texture (1-5: dragon, goblin, ogre, troll, wizard)
+      monster->alive = 1;
+      monster->speed = 1;
+      monster->speedMultiplier = 1.0f;
+      monster->damageMultiplier = 1.0f;
+      monster->powerupTimer = 0;
+      monster->movementCooldown = 0;
+      monster->level = 1;
+      monster->experience = 0;
+      monster->experienceToNext = 0;
+      monster->isInCombat = 0;
+      monster->invulnerabilityTimer = 0;
+    }
   }
 }
 
@@ -183,7 +294,7 @@ void spawnMonster()
   monster->health = 20 + rand() % 30; // 20-50 health
   monster->maxHealth = monster->health;
   monster->power = 3 + rand() % 5;          // 3-7 power
-  monster->textureIndex = 1 + (rand() % 4); // Random monster texture
+  monster->textureIndex = 1 + (rand() % 5); // Random monster texture (1-5: dragon, goblin, ogre, troll, wizard)
   monster->alive = 1;
   monster->speed = 1;
   monster->speedMultiplier = 1.0f;
@@ -760,10 +871,10 @@ void updateChunks()
 
 void ensureNearbyMonsters()
 {
-  const int MIN_NEARBY_DISTANCE = 3;   // Reduced for more responsive spawning
-  const int MAX_NEARBY_DISTANCE = 300; // Match despawn distance for consistency
-  const int MIN_NEARBY_MONSTERS = 20;  // Much higher minimum for stable population
-  const int MAX_SPAWN_PER_FRAME = 12;  // Allow more monsters to spawn quickly
+  const int MIN_NEARBY_DISTANCE = 2;   // Reduced for even closer spawning
+  const int MAX_NEARBY_DISTANCE = 200; // Reduced for more concentrated monsters
+  const int MIN_NEARBY_MONSTERS = 30;  // Increased minimum for denser population
+  const int MAX_SPAWN_PER_FRAME = 20;  // Increased spawn rate for faster population
 
   int nearbyMonsterCount = 0;
 
@@ -822,10 +933,12 @@ void ensureNearbyMonsters()
       }
       else
       {
-        // Normal spawning around player - use floating point for natural distribution
+        // Normal spawning around player - biased towards closer distances for denser population
         // Add some randomness to angle and distance for more organic spawning
         float angle = ((rand() % 360) + (rand() % 60 - 30)) * PI / 180.0f; // ±30 degree variation
-        float spawnDistance = MIN_NEARBY_DISTANCE + (rand() % (MAX_NEARBY_DISTANCE - MIN_NEARBY_DISTANCE));
+        // Bias towards closer distances using square root for more monsters near player
+        float randomValue = (float)rand() / RAND_MAX;
+        float spawnDistance = MIN_NEARBY_DISTANCE + (MAX_NEARBY_DISTANCE - MIN_NEARBY_DISTANCE) * sqrt(randomValue);
         // Add some distance variation (±20%)
         spawnDistance *= 0.8f + (rand() % 40) / 100.0f;
         spawnX = player.x + cos(angle) * spawnDistance;
@@ -1012,6 +1125,40 @@ void ensureNearbyLandmines()
 
 void updatePlayer()
 {
+  // Update status effects
+  if (player.stunTimer > 0)
+  {
+    player.stunTimer--;
+    return; // Can't move or act while stunned
+  }
+
+  if (player.dotTimer > 0)
+  {
+    player.dotTimer--;
+    if (player.dotTimer % 60 == 0) // Every second
+    {
+      player.health -= player.dotDamage;
+      if (player.health <= 0)
+      {
+        player.alive = 0;
+        PlaySound(sounds[3]); // Death sound
+      }
+    }
+  }
+
+  if (player.speedBoostTimer > 0)
+  {
+    player.speedBoostTimer--;
+  } // Update ability cooldowns
+  if (player.jumpSmashCooldown > 0)
+    player.jumpSmashCooldown--;
+  if (player.rushCooldown > 0)
+    player.rushCooldown--;
+  if (player.healCooldown > 0)
+    player.healCooldown--;
+  if (player.arrowCooldown > 0)
+    player.arrowCooldown--;
+
   // Update movement cooldown
   if (player.movementCooldown > 0)
   {
@@ -1032,24 +1179,68 @@ void updatePlayer()
 
   // Handle input
   int moved = 0;
+
+  // Track intended direction from key presses
+  player.intendedDirX = 0;
+  player.intendedDirY = 0;
+
   if (IsKeyDown(KEY_W) || IsKeyDown(KEY_UP))
   {
-    player.y -= player.speed * player.speedMultiplier;
+    player.intendedDirY = -1;
+  }
+  if (IsKeyDown(KEY_S) || IsKeyDown(KEY_DOWN))
+  {
+    player.intendedDirY = 1;
+  }
+  if (IsKeyDown(KEY_A) || IsKeyDown(KEY_LEFT))
+  {
+    player.intendedDirX = -1;
+  }
+  if (IsKeyDown(KEY_D) || IsKeyDown(KEY_RIGHT))
+  {
+    player.intendedDirX = 1;
+  }
+
+  // If no intended direction, keep last direction
+  if (player.intendedDirX == 0 && player.intendedDirY == 0)
+  {
+    player.intendedDirX = player.lastDirX;
+    player.intendedDirY = player.lastDirY;
+  }
+
+  // Calculate current speed multiplier (includes rush boost)
+  float currentSpeedMultiplier = player.speedMultiplier;
+  if (player.speedBoostTimer > 0)
+  {
+    currentSpeedMultiplier *= 2.0f; // 2x speed during rush
+  }
+
+  if (IsKeyDown(KEY_W) || IsKeyDown(KEY_UP))
+  {
+    player.y -= player.speed * currentSpeedMultiplier;
+    player.lastDirX = 0;
+    player.lastDirY = -1;
     moved = 1;
   }
   if (IsKeyDown(KEY_S) || IsKeyDown(KEY_DOWN))
   {
-    player.y += player.speed * player.speedMultiplier;
+    player.y += player.speed * currentSpeedMultiplier;
+    player.lastDirX = 0;
+    player.lastDirY = 1;
     moved = 1;
   }
   if (IsKeyDown(KEY_A) || IsKeyDown(KEY_LEFT))
   {
-    player.x -= player.speed * player.speedMultiplier;
+    player.x -= player.speed * currentSpeedMultiplier;
+    player.lastDirX = -1;
+    player.lastDirY = 0;
     moved = 1;
   }
   if (IsKeyDown(KEY_D) || IsKeyDown(KEY_RIGHT))
   {
-    player.x += player.speed * player.speedMultiplier;
+    player.x += player.speed * currentSpeedMultiplier;
+    player.lastDirX = 1;
+    player.lastDirY = 0;
     moved = 1;
   }
 
@@ -1059,6 +1250,94 @@ void updatePlayer()
     player.movementCooldown = player.isInCombat ? 12 : 6; // 50% slower when fighting
     // Play movement sound
     // if (sounds[0].frameCount > 0) PlaySound(sounds[0]);
+  }
+
+  // Handle abilities
+  if (IsKeyPressed(KEY_ONE) && player.jumpSmashCooldown <= 0)
+  {
+    // Jump smash: jump forward and AoE damage
+    int jumpDistance = 3;
+    int dirX = player.intendedDirX;
+    int dirY = player.intendedDirY;
+
+    // If no intended direction, default to up
+    if (dirX == 0 && dirY == 0)
+    {
+      dirX = 0;
+      dirY = -1;
+    }
+
+    int jumpX = player.x + dirX * jumpDistance;
+    int jumpY = player.y + dirY * jumpDistance;
+
+    // Move player
+    player.x = jumpX;
+    player.y = jumpY;
+
+    // AoE damage to nearby monsters
+    for (int i = 0; i < monsterCount; i++)
+    {
+      if (!monsters[i].alive)
+        continue;
+      float dx = monsters[i].x - player.x;
+      float dy = monsters[i].y - player.y;
+      if (sqrt(dx * dx + dy * dy) <= 2) // Within 2 units
+      {
+        monsters[i].health -= player.power * 2;
+        if (monsters[i].health <= 0)
+        {
+          monsters[i].alive = 0;
+          player.experience += 10;
+        }
+      }
+    }
+
+    player.jumpSmashCooldown = 180; // 3 seconds
+    PlaySound(sounds[0]);
+  }
+
+  if (IsKeyPressed(KEY_TWO) && player.rushCooldown <= 0)
+  {
+    // Rush: temporary speed boost
+    player.speedBoostTimer = 180; // 3 seconds of 2x speed
+    player.rushCooldown = 600;    // 10 seconds cooldown
+    PlaySound(sounds[0]);
+  }
+
+  if (IsKeyPressed(KEY_THREE) && player.healCooldown <= 0)
+  {
+    // Full heal
+    player.health = player.maxHealth;
+    player.healCooldown = 1800; // 30 seconds
+    PlaySound(sounds[1]);       // Powerup sound
+  }
+
+  // Arrow shooting (hold space)
+  if (IsKeyDown(KEY_SPACE) && player.arrowCooldown <= 0)
+  {
+    float arrowDx = player.intendedDirX;
+    float arrowDy = player.intendedDirY;
+
+    // If no intended direction, default to up
+    if (arrowDx == 0 && arrowDy == 0)
+    {
+      arrowDx = 0;
+      arrowDy = -1;
+    }
+
+    if (arrowDx != 0 || arrowDy != 0)
+    {
+      // Normalize the direction for consistent arrow speed
+      float length = sqrt(arrowDx * arrowDx + arrowDy * arrowDy);
+      if (length > 0)
+      {
+        arrowDx /= length;
+        arrowDy /= length;
+      }
+
+      spawnProjectile(player.x, player.y, arrowDx, arrowDy, 2, player.power / 2);
+      player.arrowCooldown = 60; // Once per second
+    }
   }
 
   // No bounds checking - unlimited world exploration!
@@ -1081,32 +1360,83 @@ void updateMonsters()
       continue; // Don't move while on cooldown
     }
 
-    // Random movement
-    Direction dir = rand() % 4;
+    // Special behaviors based on monster type
     int newX = monsters[i].x;
     int newY = monsters[i].y;
 
-    switch (dir)
+    if (monsters[i].textureIndex == 4) // Troll (1f47f.png) - move fast towards player
     {
-    case UP:
-      newY--;
-      break;
-    case DOWN:
-      newY++;
-      break;
-    case LEFT:
-      newX--;
-      break;
-    case RIGHT:
-      newX++;
-      break;
+      // Calculate direction towards player
+      float dx = player.x - monsters[i].x;
+      float dy = player.y - monsters[i].y;
+      float dist = sqrt(dx * dx + dy * dy);
+      if (dist > 0)
+      {
+        // Move 2 cells towards player (faster)
+        newX += (int)(dx / dist * 2);
+        newY += (int)(dy / dist * 2);
+      }
+      monsters[i].movementCooldown = monsters[i].isInCombat ? 12 : 6; // Faster movement
+    }
+    else if (monsters[i].textureIndex == 5 || monsters[i].textureIndex == 1) // Wizard (1f9d9.png) or Dragon (1f409.png) - ranged attacks
+    {
+      // Occasionally shoot projectiles
+      if (rand() % 100 < 30) // 30% chance per frame (increased for better visibility)
+      {
+        // Calculate precise direction towards player
+        float dx = player.x - monsters[i].x;
+        float dy = player.y - monsters[i].y;
+        float dist = sqrt(dx * dx + dy * dy);
+
+        if (dist > 0)
+        {
+          // Normalize direction and multiply by projectile speed for consistent movement
+          float normalizedDx = dx / dist;
+          float normalizedDy = dy / dist;
+
+          int type = (monsters[i].textureIndex == 5) ? 0 : 1; // 0=lightning for wizard, 1=fireball for dragon
+          spawnProjectile(monsters[i].x, monsters[i].y, normalizedDx, normalizedDy, type, monsters[i].power);
+        }
+      }
+
+      // Run away from player instead of random movement
+      float dx = monsters[i].x - player.x; // Reverse direction - away from player
+      float dy = monsters[i].y - player.y;
+      float dist = sqrt(dx * dx + dy * dy);
+      if (dist > 0)
+      {
+        // Move away from player
+        newX += (int)(dx / dist * 1);
+        newY += (int)(dy / dist * 1);
+      }
+
+      monsters[i].movementCooldown = monsters[i].isInCombat ? 18 : 9; // Slightly faster when running away
+    }
+    else // Other monsters - random movement
+    {
+      // Random movement
+      Direction dir = rand() % 4;
+      switch (dir)
+      {
+      case UP:
+        newY--;
+        break;
+      case DOWN:
+        newY++;
+        break;
+      case LEFT:
+        newX--;
+        break;
+      case RIGHT:
+        newX++;
+        break;
+      }
+      monsters[i].movementCooldown = monsters[i].isInCombat ? 24 : 12; // 50% slower when fighting
     }
 
     // No bounds checking - unlimited world!
     monsters[i].x = newX;
     monsters[i].y = newY;
-    // Set cooldown after moving (longer when in combat)
-    monsters[i].movementCooldown = monsters[i].isInCombat ? 24 : 12; // 50% slower when fighting
   }
 
   // Despawn monsters that are too far from player
@@ -1182,6 +1512,26 @@ void checkCollisions()
       // Per-tick damage (only if player is not invulnerable)
       int playerDamage = (int)(player.power * player.damageMultiplier * 0.5f); // Reduced damage per tick
       int monsterDamage = (int)(monsters[i].power * monsters[i].damageMultiplier * 0.5f);
+
+      // Troll gang damage multiplier
+      if (monsters[i].textureIndex == 4) // Troll
+      {
+        int nearbyTrolls = 0;
+        for (int j = 0; j < monsterCount; j++)
+        {
+          if (i != j && monsters[j].alive && monsters[j].textureIndex == 4)
+          {
+            int tdx = abs(monsters[i].x - monsters[j].x);
+            int tdy = abs(monsters[i].y - monsters[j].y);
+            if (tdx <= 2 && tdy <= 2) // Within 2 units
+            {
+              nearbyTrolls++;
+            }
+          }
+        }
+        // Damage multiplier: 2x per nearby troll
+        monsterDamage *= (1 << nearbyTrolls); // 2^nearbyTrolls
+      }
 
       monsters[i].health -= playerDamage;
 
@@ -1636,6 +1986,9 @@ void drawUI()
   DrawRectangleLines(WINDOW_SIZE - 100, 8, 90, 25, WHITE);
   DrawText("RESTART (R)", WINDOW_SIZE - 95, 12, 14, WHITE);
 
+  // Controls display
+  DrawText("WASD: Move | SPACE: Arrow | SHIFT: Rush | H: Heal | M: Minimap", 10, WINDOW_SIZE - 25, 14, WHITE);
+
   // Powerup status (if active)
   if (player.powerupTimer > 0)
   {
@@ -1657,6 +2010,30 @@ void drawUI()
     }
     DrawText(TextFormat("%s (%d)", powerupName, player.powerupTimer / 60), 120, 48, 14, YELLOW);
   }
+
+  // Ability cooldowns
+  if (player.jumpSmashCooldown > 0)
+    DrawText(TextFormat("1: JUMP (%d)", player.jumpSmashCooldown / 60), 550, 8, 14, RED);
+  else
+    DrawText("1: JUMP", 550, 8, 14, GREEN);
+
+  if (player.rushCooldown > 0)
+    DrawText(TextFormat("2: RUSH (%d)", player.rushCooldown / 60), 550, 28, 14, RED);
+  else
+    DrawText("2: RUSH", 550, 28, 14, GREEN);
+
+  if (player.healCooldown > 0)
+    DrawText(TextFormat("3: HEAL (%d)", player.healCooldown / 60), 550, 48, 14, RED);
+  else
+    DrawText("3: HEAL", 550, 48, 14, GREEN);
+
+  // Status effects
+  if (player.stunTimer > 0)
+    DrawText("STUNNED", 350, 8, 16, YELLOW);
+  if (player.dotTimer > 0)
+    DrawText("BURNING", 350, 28, 16, RED);
+  if (player.speedBoostTimer > 0)
+    DrawText("RUSHING!", 350, 48, 16, SKYBLUE);
 
   // Draw minimap (moved to bottom right)
   drawMinimap();
@@ -1686,6 +2063,9 @@ int main()
   textures[3] = LoadTexture("emojis/1f479.png"); // Ogre
   textures[4] = LoadTexture("emojis/1f47f.png"); // Troll
   textures[5] = LoadTexture("emojis/1f9d9.png"); // Wizard
+  textures[6] = LoadTexture("emojis/26a1.png");  // Lightning bolt
+  textures[7] = LoadTexture("emojis/1f525.png"); // Fireball
+  textures[8] = LoadTexture("emojis/27a1.png");  // Arrow (right arrow)
 
   // Load sounds
   sounds[0] = LoadSound("sounds/fight.wav");    // Battle sound
@@ -1710,6 +2090,7 @@ int main()
       checkCollisions();
       updatePowerups();
       updateLandmines();
+      updateProjectiles();
       updateChunks(); // Update chunk loading/unloading
 
       // Ensure monsters are nearby
@@ -1720,38 +2101,227 @@ int main()
 
       // Ensure landmines are nearby
       ensureNearbyLandmines();
+    }
 
-      // Restart on R key (works anytime)
-      if (IsKeyPressed(KEY_R))
+    // Auto-restart after death (after a short delay)
+    if (!player.alive && player.deathTimer <= 0)
+    {
+      player.deathTimer = 180; // 3 second delay before auto-restart
+    }
+    if (!player.alive && player.deathTimer > 0)
+    {
+      player.deathTimer--;
+      if (player.deathTimer <= 0)
       {
-        initGame();
+        restartGame();
         spawnTimer = 0;
       }
+    }
 
-      // Draw
-      BeginDrawing();
-      ClearBackground(WHITE);
+    // Manual restart on R key (works anytime)
+    if (IsKeyPressed(KEY_R))
+    {
+      restartGame();
+      spawnTimer = 0;
+    }
 
-      BeginMode2D(camera);
-      drawWorld();
-      EndMode2D();
+    // Draw
+    BeginDrawing();
+    ClearBackground(WHITE);
 
-      drawUI();
+    BeginMode2D(camera);
+    drawWorld();
+    drawProjectiles();
+    EndMode2D();
 
-      EndDrawing();
+    drawUI();
+
+    EndDrawing();
+  }
+}
+
+// Cleanup
+for (int i = 0; i < 9; i++)
+{
+  UnloadTexture(textures[i]);
+}
+for (int i = 0; i < 5; i++)
+{
+  UnloadSound(sounds[i]);
+}
+CloseAudioDevice();
+CloseWindow();
+return 0;
+}
+
+void spawnProjectile(int x, int y, float dx, float dy, int type, int damage)
+{
+  if (projectileCount >= MAX_PROJECTILES)
+    return;
+
+  Projectile *proj = &projectiles[projectileCount++];
+  proj->x = x;
+  proj->y = y;
+  proj->dx = dx;
+  proj->dy = dy;
+  proj->type = type;
+  proj->alive = 1;
+  proj->damage = damage;
+  proj->speed = 2; // Projectiles move 2 cells per frame
+
+  // Set effect and range based on type
+  if (type == 0)
+  {
+    proj->effect = 1;     // Lightning = stun
+    proj->maxRange = 200; // Lightning travels far
+  }
+  else if (type == 1)
+  {
+    proj->effect = 2;     // Fireball = DoT
+    proj->maxRange = 150; // Fireballs travel medium distance
+  }
+  else
+  {
+    proj->effect = 0;    // Arrow = no effect
+    proj->maxRange = 80; // Arrows have limited range
+  }
+  proj->range = 0; // Start with zero distance traveled
+}
+
+void updateProjectiles()
+{
+  for (int i = projectileCount - 1; i >= 0; i--)
+  {
+    if (!projectiles[i].alive)
+      continue;
+
+    // Move projectile with precise float directions
+    projectiles[i].x += projectiles[i].dx * projectiles[i].speed;
+    projectiles[i].y += projectiles[i].dy * projectiles[i].speed;
+
+    // Update range traveled (calculate actual distance moved)
+    float distanceMoved = sqrt(projectiles[i].dx * projectiles[i].dx * projectiles[i].speed * projectiles[i].speed +
+                               projectiles[i].dy * projectiles[i].dy * projectiles[i].speed * projectiles[i].speed);
+    projectiles[i].range += (int)distanceMoved;
+
+    // Check if projectile exceeded its maximum range
+    if (projectiles[i].range >= projectiles[i].maxRange)
+    {
+      projectiles[i].alive = 0;
+      continue;
+    }
+
+    // Check collision with player
+    if (abs(projectiles[i].x - player.x) <= 1 && abs(projectiles[i].y - player.y) <= 1)
+    {
+      if (!player.invulnerabilityTimer)
+      {
+        player.health -= projectiles[i].damage;
+        PlaySound(sounds[0]);             // Fight sound
+        player.invulnerabilityTimer = 60; // 1 second invulnerability
+
+        // Apply projectile effects
+        if (projectiles[i].effect == 1) // Stun (lightning)
+        {
+          player.stunTimer = 60; // 1 second stun
+        }
+        else if (projectiles[i].effect == 2) // DoT (fire)
+        {
+          player.dotTimer = 180;                        // 3 seconds DoT
+          player.dotDamage = projectiles[i].damage / 3; // Damage over 3 ticks
+        }
+      }
+      projectiles[i].alive = 0;
+      continue;
+    }
+
+    // Check collision with monsters
+    for (int j = 0; j < monsterCount; j++)
+    {
+      if (!monsters[j].alive)
+        continue;
+
+      if (abs(projectiles[i].x - monsters[j].x) <= 1 && abs(projectiles[i].y - monsters[j].y) <= 1)
+      {
+        // Damage the monster
+        monsters[j].health -= projectiles[i].damage;
+
+        // Apply projectile effects to monster
+        if (projectiles[i].effect == 1) // Stun (lightning)
+        {
+          monsters[j].stunTimer = 60; // 1 second stun
+        }
+        else if (projectiles[i].effect == 2) // DoT (fire)
+        {
+          monsters[j].dotTimer = 180;                        // 3 seconds DoT
+          monsters[j].dotDamage = projectiles[i].damage / 3; // Damage over 3 ticks
+        }
+
+        // Check if monster died
+        if (monsters[j].health <= 0)
+        {
+          monsters[j].alive = 0;
+          // Award experience to player
+          player.experience += monsters[j].power * 10;
+
+          // Check for level up
+          if (player.experience >= player.experienceToNext)
+          {
+            player.level++;
+            player.experience -= player.experienceToNext;
+            player.experienceToNext = player.level * 100;
+            player.maxHealth += 20;
+            player.health = player.maxHealth;
+            player.power += 2;
+          }
+        }
+
+        // Remove projectile after hitting
+        projectiles[i].alive = 0;
+        break; // Exit monster loop since projectile is dead
+      }
+    }
+
+    // Despawn if too far
+    float dx = projectiles[i].x - player.x;
+    float dy = projectiles[i].y - player.y;
+    if (sqrt(dx * dx + dy * dy) > 50)
+    {
+      projectiles[i].alive = 0;
     }
   }
 
-  // Cleanup
-  for (int i = 0; i < 6; i++)
+  // Remove dead projectiles
+  for (int i = projectileCount - 1; i >= 0; i--)
   {
-    UnloadTexture(textures[i]);
+    if (!projectiles[i].alive)
+    {
+      projectiles[i] = projectiles[projectileCount - 1];
+      projectileCount--;
+    }
   }
-  for (int i = 0; i < 5; i++)
+}
+
+void drawProjectiles()
+{
+  for (int i = 0; i < projectileCount; i++)
   {
-    UnloadSound(sounds[i]);
+    if (!projectiles[i].alive)
+      continue;
+
+    int textureIndex = 6 + projectiles[i].type; // 6=lightning, 7=fireball, 8=arrow
+    if (projectiles[i].type == 2)
+      textureIndex = 8; // Arrow uses texture 8
+
+    // Draw all projectiles at 10x10 pixels (half tile size)
+    Rectangle sourceRect = {0, 0, textures[textureIndex].width, textures[textureIndex].height};
+    Rectangle destRect = {
+        projectiles[i].x * CELL_SIZE - camera.target.x + WINDOW_SIZE / 2,
+        projectiles[i].y * CELL_SIZE - camera.target.y + WINDOW_SIZE / 2,
+        CELL_SIZE / 2.0f, // 10x10 pixels
+        CELL_SIZE / 2.0f  // 10x10 pixels
+    };
+    Vector2 origin = {CELL_SIZE / 4.0f, CELL_SIZE / 4.0f}; // Center the smaller sprite
+    DrawTexturePro(textures[textureIndex], sourceRect, destRect, origin, 0.0f, WHITE);
   }
-  CloseAudioDevice();
-  CloseWindow();
-  return 0;
 }
